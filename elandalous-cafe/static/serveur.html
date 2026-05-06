@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>El Andalous — Serveur</title>
+<style>
+:root{--bg:#0f0f13;--surface:#1a1a22;--gold:#c9a84c;--gl:#e8c96a;--cr:#f0e6d0;--cd:#9a8f7a;--pending:#e67e22;--preparing:#3498db;--ready:#27ae60;--red:#e74c3c;--green:#2ecc71}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--cr);font-family:Georgia,serif;min-height:100vh}
+.header{background:var(--surface);padding:14px 20px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;border-bottom:1px solid rgba(255,255,255,.08);flex-wrap:wrap;gap:10px}
+h1{font-size:20px;color:var(--gl)}
+.conn{font-size:11px;padding:5px 12px;border-radius:20px;background:rgba(39,174,96,.12);color:var(--green)}
+.conn.off{background:rgba(231,76,60,.12);color:var(--red)}
+.filters{display:flex;gap:6px;padding:10px 20px;overflow-x:auto;border-bottom:1px solid rgba(255,255,255,.08)}
+.fbtn{background:transparent;border:1px solid rgba(255,255,255,.1);color:var(--cd);padding:7px 14px;border-radius:20px;cursor:pointer;font-size:11px;white-space:nowrap}
+.fbtn.active{background:rgba(201,168,76,.15);border-color:var(--gold);color:var(--gold)}
+.grid{padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(350px,1fr));gap:12px}
+.card{background:var(--surface);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:14px;animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.card.new{animation:flash 1.5s}
+@keyframes flash{0%,100%{background:var(--surface)}50%{background:rgba(201,168,76,.1)}}
+.card-top{display:flex;justify-content:space-between;margin-bottom:10px}
+.num{font-size:18px;font-weight:bold}
+.table{color:var(--gold);font-size:13px}
+.status{display:inline-block;padding:3px 10px;border-radius:12px;font-size:10px;text-transform:uppercase}
+.status-pending{color:var(--pending);border:1px solid var(--pending)}
+.status-preparing{color:var(--preparing);border:1px solid var(--preparing)}
+.status-ready{color:var(--ready);border:1px solid var(--ready)}
+.item{display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid rgba(255,255,255,.03)}
+.note{background:rgba(230,126,34,.1);padding:6px 10px;border-radius:6px;margin-top:8px;font-size:11px;font-style:italic;color:var(--pending)}
+.total{text-align:right;font-size:18px;color:var(--gl);margin-top:8px;font-weight:bold}
+.actions{display:flex;gap:6px;margin-top:10px}
+.btn{padding:7px 12px;border-radius:6px;border:1px solid;cursor:pointer;font-size:10px;text-transform:uppercase}
+.btn-cuisine{color:var(--preparing);border-color:var(--preparing);background:rgba(52,152,219,.1)}
+.btn-pret{color:var(--ready);border-color:var(--ready);background:rgba(39,174,96,.1)}
+.btn-servi{background:var(--gold);color:var(--bg);border-color:var(--gold)}
+.btn-cancel{color:var(--red);border-color:var(--red);background:rgba(231,76,60,.05)}
+.empty{text-align:center;padding:60px;color:var(--cd);grid-column:1/-1}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--gold);color:#000;padding:10px 20px;border-radius:10px;z-index:200;opacity:0;transition:opacity .3s}
+.toast.show{opacity:1}
+.alert{position:fixed;top:20px;right:20px;background:var(--pending);color:#fff;padding:14px 22px;border-radius:10px;z-index:300;display:none;font-weight:bold;animation:bounce .4s}
+@keyframes bounce{0%{transform:scale(.7)}60%{transform:scale(1.1)}100%{transform:scale(1)}}
+.alert.show{display:block}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>☕ El Andalous — SERVEUR</h1>
+  <div style="display:flex;align-items:center;gap:10px">
+    <div class="conn" id="conn">🟢 EN LIGNE</div>
+    <div style="font-size:14px">📋 <b id="count">0</b> commandes</div>
+  </div>
+</div>
+<div class="filters">
+  <button class="fbtn active" onclick="filter('all',this)">Toutes</button>
+  <button class="fbtn" onclick="filter('pending',this)">🟠 En attente</button>
+  <button class="fbtn" onclick="filter('preparing',this)">🔵 En cuisine</button>
+  <button class="fbtn" onclick="filter('ready',this)">🟢 Prêt</button>
+</div>
+<div class="grid" id="grid">
+  <div class="empty">📡 En attente de commandes...</div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="alert" id="alert"></div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const socket = io({transports:['websocket','polling']});
+let orders = {};
+let filterStatus = 'all';
+
+socket.on('connect', () => {
+  console.log('🟢 Connecté');
+  document.getElementById('conn').textContent = '🟢 EN LIGNE';
+  document.getElementById('conn').classList.remove('off');
+});
+
+socket.on('disconnect', () => {
+  console.log('🔴 Déconnecté');
+  document.getElementById('conn').textContent = '🔴 RECONNEXION...';
+  document.getElementById('conn').classList.add('off');
+});
+
+socket.on('init_data', (data) => {
+  console.log('📦 INIT:', data.orders?.length, 'commandes');
+  orders = {};
+  if (data.orders) data.orders.forEach(o => orders[o.id] = o);
+  render();
+});
+
+socket.on('new_order', (order) => {
+  console.log('🆕 NOUVELLE:', order.order_num);
+  orders[order.id] = order;
+  render();
+  showAlert(`🔔 ${order.order_num} - Table ${order.table_num} !`);
+  showToast(`Nouvelle commande Table ${order.table_num}`);
+});
+
+socket.on('order_updated', (order) => {
+  orders[order.id] = order;
+  render();
+});
+
+socket.on('waiter_called', (call) => {
+  showAlert(`🔔 APPEL TABLE ${call.table_num} !`);
+  showToast(`Table ${call.table_num} appelle !`);
+});
+
+function filter(f, btn) {
+  filterStatus = f;
+  document.querySelectorAll('.fbtn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  render();
+}
+
+async function updateStatus(id, status) {
+  await fetch(`/api/orders/${id}/status`, {
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({status})
+  });
+}
+
+function render() {
+  const all = Object.values(orders);
+  document.getElementById('count').textContent = all.filter(o => ['pending','preparing','ready'].includes(o.status)).length;
+  
+  const filtered = filterStatus === 'all' 
+    ? all.filter(o => o.status !== 'done' && o.status !== 'cancelled')
+    : all.filter(o => o.status === filterStatus);
+  
+  filtered.sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+  
+  if (!filtered.length) {
+    document.getElementById('grid').innerHTML = '<div class="empty">✅ Aucune commande active</div>';
+    return;
+  }
+  
+  const labels = {pending:'🟠 En attente',preparing:'🔵 En cuisine',ready:'🟢 Prêt',done:'✅ Servi',cancelled:'❌ Annulé'};
+  
+  document.getElementById('grid').innerHTML = filtered.map(o => {
+    const items = (o.items||[]).map(i => 
+      `<div class="item"><span>${i.emoji||'🍽️'} ${i.name}</span><span>×${i.qty} - ${((i.price||0)*i.qty).toFixed(1)} DT</span></div>`
+    ).join('');
+    
+    let actions = '';
+    if (o.status === 'pending') actions = `<button class="btn btn-cuisine" onclick="updateStatus(${o.id},'preparing')">🍳 Cuisine</button><button class="btn btn-cancel" onclick="updateStatus(${o.id},'cancelled')">✕</button>`;
+    else if (o.status === 'preparing') actions = `<button class="btn btn-pret" onclick="updateStatus(${o.id},'ready')">✅ Prêt</button><button class="btn btn-cancel" onclick="updateStatus(${o.id},'cancelled')">✕</button>`;
+    else if (o.status === 'ready') actions = `<button class="btn btn-servi" onclick="updateStatus(${o.id},'done')">✓✓ Servi</button>`;
+    
+    const elapsed = Math.floor((Date.now() - new Date(o.created_at)) / 60000);
+    
+    return `
+      <div class="card new" id="card-${o.id}">
+        <div class="card-top">
+          <div><div class="num">${o.order_num}</div><div class="table">🪑 Table ${o.table_num} · ⏱ ${elapsed}min</div></div>
+          <span class="status status-${o.status}">${labels[o.status]}</span>
+        </div>
+        ${o.note ? `<div class="note">📝 ${o.note}</div>` : ''}
+        <div style="margin:8px 0">${items}</div>
+        <div class="total">${(o.total||0).toFixed(3)} DT</div>
+        <div class="actions">${actions}</div>
+      </div>`;
+  }).join('');
+  
+  setTimeout(() => document.querySelectorAll('.card.new').forEach(c => c.classList.remove('new')), 2000);
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function showAlert(msg) {
+  const a = document.getElementById('alert');
+  a.textContent = msg;
+  a.classList.add('show');
+  setTimeout(() => a.classList.remove('show'), 5000);
+  try {
+    const ctx = new AudioContext();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);
+    o.frequency.setValueAtTime(880,ctx.currentTime);
+    o.frequency.setValueAtTime(660,ctx.currentTime+.1);
+    g.gain.setValueAtTime(.3,ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,ctx.currentTime+.4);
+    o.start();o.stop(ctx.currentTime+.4);
+  } catch(e) {}
+}
+
+setInterval(render, 30000);
+</script>
+</body>
+</html>
